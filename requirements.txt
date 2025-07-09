@@ -1,0 +1,12 @@
+notion-client==2.2.1
+python-dotenv==1.0.0
+requests==2.31.0
+ollama==0.1.7
+streamlit==1.28.0
+flask==3.0.0
+#Re-run the following command to install the required packages
+google-auth==2.23.4
+google-auth-oauthlib==1.1.0
+google-auth-httplib2==0.1.1
+google-api-python-client==2.108.0
+spotipy==2.23.0
