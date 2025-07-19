@@ -1,3 +1,4 @@
+
 """
 Notion AI Agent - Main Script
 A simple AI agent that connects to Notion and uses local models
@@ -5,95 +6,68 @@ A simple AI agent that connects to Notion and uses local models
 
 import os
 import sys
-from dotenv import load_dotenv
-from notion_client import Client
-import requests
 import json
-from datetime import datetime
+from typing import Dict, Any, List
+from notion_client import Client
 
-load_dotenv()
+from base_agent import BaseAgent
 
-class NotionAIAgent:
+class NotionAgent(BaseAgent):
+    """Notion AI Agent for workspace management"""
+
     def __init__(self):
+        super().__init__("notion")
         self.notion_token = os.getenv('NOTION_TOKEN')
         if not self.notion_token:
-            print("Error: NOTION_TOKEN not found in .env file")
-            sys.exit(1)
+            self.logger.error("NOTION_TOKEN not found in .env file")
+            raise ValueError("NOTION_TOKEN not found")
         
         self.notion = Client(auth=self.notion_token)
-        self.ollama_url = "http://localhost:11434"
-        
 
-    def test_notion_connection(self):
+    def _test_service_connection(self) -> bool:
         """Test if Notion connection works"""
         try:
-            # Try to list databases
             databases = self.notion.search(filter={"property": "object", "value": "database"})
-            print(f"Connected to Notion! Found {len(databases['results'])} databases")
+            self.logger.info(f"Connected to Notion! Found {len(databases['results'])} databases")
             return True
         except Exception as e:
-            print(f"Notion connection failed: {e}")
+            self.logger.error(f"Notion connection failed: {e}")
             return False
-    
-    def test_ollama_connection(self):
-        """Test if Ollama is running and has models"""
+
+    def get_status(self) -> Dict[str, Any]:
+        """Get current status of the agent"""
         try:
-            response = requests.get(f"{self.ollama_url}/api/tags")
-            if response.status_code == 200:
-                models = response.json()
-                if models['models']:
-                    print(f"Ollama connected! Available models: {[m['name'] for m in models['models']]}")
-                    return True
-                else:
-                    print("Ollama connected but no models found. Run: ollama pull llama2")
-                    return False
-            else:
-                print("Ollama not responding. Make sure to run: ollama serve")
-                return False
+            databases = self.get_databases()
+            return {
+                'status': 'connected',
+                'database_count': len(databases)
+            }
         except Exception as e:
-            print(f"Ollama connection failed: {e}")
-            return False
-    
-    def get_databases(self):
+            return {'status': 'error', 'error': str(e)}
+
+    def get_databases(self) -> List[Dict[str, Any]]:
         """Get all accessible databases"""
         try:
             databases = self.notion.search(filter={"property": "object", "value": "database"})
-            return databases['results']
+            return databases.get('results', [])
         except Exception as e:
-            print(f"Error getting databases: {e}")
+            self.logger.error(f"Error getting databases: {e}")
             return []
-    
-    def get_database_pages(self, database_id, limit=10):
+
+    def get_database_pages(self, database_id: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Get pages from a specific database"""
         try:
             pages = self.notion.databases.query(
                 database_id=database_id,
                 page_size=limit
             )
-            return pages['results']
+            return pages.get('results', [])
         except Exception as e:
-            print(f"Error getting pages: {e}")
+            self.logger.error(f"Error getting pages: {e}")
             return []
-    
-    def ask_ai(self, prompt, model="llama2"):
-        """Send prompt to local AI model"""
-        try:
-            data = {
-                "model": model,
-                "prompt": prompt,
-                "stream": False
-            }
-            response = requests.post(f"{self.ollama_url}/api/generate", json=data)
-            if response.status_code == 200:
-                return response.json()['response']
-            else:
-                return f"Error: {response.status_code}"
-        except Exception as e:
-            return f"AI Error: {e}"
-    
-    def ask_about_notion(self, question):
+
+    def ask_about_notion(self, question: str) -> str:
         """Ask AI about Notion data with context"""
-        # Get current database info
         databases = self.get_databases()
         
         context = f"""
@@ -113,22 +87,21 @@ class NotionAIAgent:
         context += f"\n\nUser question: {question}"
         context += "\n\nPlease answer based on the Notion data provided above. If you need more specific information about a database, suggest using the 'summarize' command."
         
+        self.log_action("ask_about_notion", f"Answering question: {question}")
         return self.ask_ai(context)
-    
-    def summarize_database(self, database_id):
+
+    def summarize_database(self, database_id: str) -> str:
         """Summarize content of a database using AI"""
         pages = self.get_database_pages(database_id)
         if not pages:
             return "No pages found in database"
         
-        # Extract basic info from pages
         page_info = []
         for page in pages:
             title = "Untitled"
             if page.get('properties'):
-                # Try to find title property
                 for prop_name, prop_value in page['properties'].items():
-                    if prop_value['type'] == 'title' and prop_value['title']:
+                    if prop_value['type'] == 'title' and prop_value.get('title'):
                         title = prop_value['title'][0]['text']['content']
                         break
             
@@ -138,7 +111,6 @@ class NotionAIAgent:
                 'last_edited': page['last_edited_time']
             })
         
-        # Create prompt for AI
         prompt = f"""
         I have a Notion database with {len(pages)} pages. Here's the information:
         
@@ -147,8 +119,9 @@ class NotionAIAgent:
         Please provide a brief summary of this database content and suggest what type of database this might be.
         """
         
+        self.log_action("summarize_database", f"Summarizing database ID: {database_id}")
         return self.ask_ai(prompt)
-    
+
     def interactive_mode(self):
         """Interactive CLI mode"""
         print("\n🤖 Notion AI Agent - Interactive Mode")
@@ -190,25 +163,25 @@ class NotionAIAgent:
                 print("\nGoodbye!")
                 break
             except Exception as e:
-                print(f"Error: {e}")
+                self.logger.error(f"An error occurred in interactive mode: {e}")
 
 def main():
     """Main function"""
     print("🚀 Starting Notion AI Agent...")
     
-    agent = NotionAIAgent()
-    
-    # Test connections
-    print("\n🔍 Testing connections...")
-    notion_ok = agent.test_notion_connection()
-    ollama_ok = agent.test_ollama_connection()
-    
-    if not notion_ok or not ollama_ok:
-        print("\n❌ Setup incomplete. Please fix the issues above.")
+    try:
+        agent = NotionAgent()
+        
+        print("\n🔍 Testing connections...")
+        if not agent.test_connection():
+            print("\n❌ Setup incomplete. Please fix the issues above.")
+            sys.exit(1)
+        
+        agent.interactive_mode()
+
+    except ValueError as e:
+        print(f"Error: {e}")
         sys.exit(1)
-    
-    # Start interactive mode
-    agent.interactive_mode()
 
 if __name__ == "__main__":
     main()

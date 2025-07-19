@@ -35,7 +35,7 @@ class SpotifyAgent(BaseAgent):
         super().__init__("spotify")
         self.client_id = os.getenv('SPOTIFY_CLIENT_ID')
         self.client_secret = os.getenv('SPOTIFY_CLIENT_SECRET')
-        self.redirect_uri = os.getenv('SPOTIFY_REDIRECT_URI', 'http://localhost:8888/callback')
+        self.redirect_uri = os.getenv('SPOTIFY_REDIRECT_URI', 'https://example.com/callback')
         
         if not self.client_id or not self.client_secret:
             raise ValueError("Spotify credentials not found. Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET")
@@ -214,76 +214,81 @@ class SpotifyAgent(BaseAgent):
             self.logger.error(f"Error adding tracks to playlist: {e}")
             return False
     
+    def _get_ai_track_suggestions(self, mood: str) -> List[str]:
+        """Get track suggestions for a mood from the AI."""
+        prompt = f"""
+        Create a list of music recommendations for someone feeling {mood}.
+        Provide 10-15 song suggestions in this format:
+        - "Song Name" by Artist Name
+        Focus on songs that match the {mood} mood. Include a mix of popular and lesser-known tracks.
+        """
+        
+        ai_suggestions = self.ask_ai(prompt)
+        track_ids = []
+        lines = ai_suggestions.split('\n')
+        
+        for line in lines:
+            if line.strip().startswith( ('-', '•') ):
+                song_info = line.strip().lstrip('-•').strip()
+                if ' by ' in song_info:
+                    song_name, artist = song_info.split(' by ', 1)
+                    song_name = song_name.strip().strip('"')
+                    artist = artist.strip()
+                    
+                    search_results = self.search_tracks(f"{song_name} {artist}", limit=1)
+                    if search_results:
+                        track_ids.append(search_results[0]['id'])
+        return track_ids
+
+    def _get_genre_recommendations(self, mood: str, limit: int) -> List[str]:
+        """Get track recommendations based on mood-mapped genres."""
+        genre_map = {
+            'happy': ['pop', 'dance', 'funk'],
+            'sad': ['indie', 'blues', 'singer-songwriter'],
+            'energetic': ['rock', 'electronic', 'hip-hop'],
+            'chill': ['ambient', 'jazz', 'indie-folk'],
+            'focus': ['classical', 'ambient', 'instrumental']
+        }
+        genres = genre_map.get(mood.lower(), ['pop'])
+        recommendations = self.get_recommendations(seed_genres=genres, limit=limit)
+        return [rec['id'] for rec in recommendations]
+
     def create_mood_playlist(self, mood: str, limit: int = 20) -> Dict[str, Any]:
-        """Create a playlist based on mood using AI"""
+        """Create a playlist based on mood using AI and genre recommendations."""
         try:
-            # Get AI suggestions for the mood
-            prompt = f"""
-            Create a list of music recommendations for someone feeling {mood}.
+            self.log_action("create_mood_playlist", f"Starting playlist creation for mood: {mood}")
             
-            Provide 10-15 song suggestions in this format:
-            - "Song Name" by Artist Name
-            - "Song Name" by Artist Name
+            # Step 1: Get initial suggestions from AI
+            track_ids = self._get_ai_track_suggestions(mood)
             
-            Focus on songs that match the {mood} mood. Include a mix of popular and lesser-known tracks.
-            """
-            
-            ai_suggestions = self.ask_ai(prompt)
-            
-            # Extract song suggestions and search for them
-            tracks_to_add = []
-            lines = ai_suggestions.split('\n')
-            
-            for line in lines:
-                if line.strip().startswith('-') or line.strip().startswith('•'):
-                    # Extract song and artist
-                    song_info = line.strip().lstrip('-•').strip()
-                    if ' by ' in song_info:
-                        song_name, artist = song_info.split(' by ', 1)
-                        song_name = song_name.strip().strip('"')
-                        artist = artist.strip()
-                        
-                        # Search for the track
-                        search_results = self.search_tracks(f"{song_name} {artist}", limit=1)
-                        if search_results:
-                            tracks_to_add.append(search_results[0]['id'])
-            
-            # If we don't have enough tracks, add some recommendations
-            if len(tracks_to_add) < 10:
-                # Get genre-based recommendations
-                genre_map = {
-                    'happy': ['pop', 'dance', 'funk'],
-                    'sad': ['indie', 'blues', 'singer-songwriter'],
-                    'energetic': ['rock', 'electronic', 'hip-hop'],
-                    'chill': ['ambient', 'jazz', 'indie-folk'],
-                    'focus': ['classical', 'ambient', 'instrumental']
-                }
-                
-                genres = genre_map.get(mood.lower(), ['pop'])
-                recommendations = self.get_recommendations(seed_genres=genres, limit=20)
-                
-                for rec in recommendations:
-                    if len(tracks_to_add) >= limit:
-                        break
-                    if rec['id'] not in tracks_to_add:
-                        tracks_to_add.append(rec['id'])
-            
-            # Create the playlist
+            # Step 2: If not enough tracks, supplement with genre-based recommendations
+            if len(track_ids) < 10:
+                needed = limit - len(track_ids)
+                genre_recs = self._get_genre_recommendations(mood, needed)
+                for rec_id in genre_recs:
+                    if rec_id not in track_ids:
+                        track_ids.append(rec_id)
+
+            if not track_ids:
+                self.logger.warning("Could not find any tracks for the mood playlist.")
+                return {'status': 'error', 'error': 'No tracks found'}
+
+            # Step 3: Create the playlist
             playlist_name = f"{mood.title()} Vibes - {datetime.now().strftime('%Y-%m-%d')}"
-            description = f"AI-generated playlist for {mood} mood"
-            
+            description = f"AI-generated playlist for a {mood} mood."
             playlist = self.create_playlist(playlist_name, description)
+
+            if 'id' not in playlist:
+                return playlist # Return the error from create_playlist
+
+            # Step 4: Add tracks to the new playlist
+            final_tracks = track_ids[:limit]
+            self.add_tracks_to_playlist(playlist['id'], final_tracks)
+            playlist['tracks_added'] = len(final_tracks)
             
-            if 'id' in playlist:
-                # Add tracks to playlist
-                self.add_tracks_to_playlist(playlist['id'], tracks_to_add[:limit])
-                playlist['tracks_added'] = len(tracks_to_add[:limit])
-                
-                self.log_action("create_mood_playlist", f"Created {mood} playlist with {len(tracks_to_add[:limit])} tracks")
-                return playlist
-            else:
-                return playlist
-                
+            self.log_action("create_mood_playlist", f"Successfully created '{playlist_name}' with {len(final_tracks)} tracks.")
+            return playlist
+
         except Exception as e:
             self.logger.error(f"Error creating mood playlist: {e}")
             return {'status': 'error', 'error': str(e)}
@@ -341,3 +346,60 @@ class SpotifyAgent(BaseAgent):
         except Exception as e:
             self.logger.error(f"Error resuming playback: {e}")
             return False
+
+    def interactive_mode(self):
+        """Interactive mode for Spotify agent"""
+        print(f"\n🎵 Spotify Agent - Interactive Mode")
+        print("Commands: 'current', 'search <query>', 'play <track_id>', 'pause', 'resume', 'quit'")
+
+        while True:
+            try:
+                command = input("\n> ").strip()
+
+                if command == 'quit':
+                    break
+
+                elif command == 'current':
+                    track = self.get_current_track()
+                    if track.get('name'):
+                        print(f"\n▶️ Now Playing: {track['name']} by {track['artist']}")
+                    else:
+                        print("\n⏹️ Nothing is currently playing.")
+
+                elif command.startswith('search '):
+                    query = command.split(' ', 1)[1]
+                    tracks = self.search_tracks(query)
+                    if tracks:
+                        print(f"\n🔍 Search results for '{query}':")
+                        for i, t in enumerate(tracks, 1):
+                            print(f"{i}. {t['name']} by {t['artist']} (ID: {t['id']})")
+                    else:
+                        print("No tracks found.")
+
+                elif command.startswith('play '):
+                    track_id = command.split(' ', 1)[1]
+                    if self.play_track(track_id):
+                        print(f"Playing track: {track_id}")
+
+                elif command == 'pause':
+                    self.pause_playback()
+                    print("Playback paused.")
+
+                elif command == 'resume':
+                    self.resume_playback()
+                    print("Playback resumed.")
+
+                else:
+                    print("Unknown command.")
+
+            except KeyboardInterrupt:
+                break
+            except Exception as e:
+                print(f"An error occurred: {e}")
+        
+if __name__ == "__main__":
+    agent = SpotifyAgent()
+    if agent.test_connection():
+        agent.interactive_mode()
+    else:
+        print("Failed to connect to Spotify")

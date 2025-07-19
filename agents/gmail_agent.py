@@ -30,7 +30,7 @@ class GmailAgent(BaseAgent):
     
     def __init__(self):
         super().__init__("gmail")
-        self.credentials_file = os.getenv('GMAIL_CREDENTIALS_FILE', 'credentials/gmail_credentials.json')
+        self.credentials_file = os.getenv('GMAIL_CREDENTIALS_FILE', 'gmail_credentials.json')
         self.token_file = os.getenv('GMAIL_TOKEN_FILE', 'credentials/gmail_token.json')
         self.service = None
         self._authenticate()

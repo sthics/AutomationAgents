@@ -17,5 +17,13 @@ env/
 # OS-specific
 .DS_Store
 
-# Gmail API 
+# Gmail Credentials
 gmail_credentials.json
+gmail_token.json
+credentials/
+
+# Spotify Credentials
+.spotify_cache
+
+
+
